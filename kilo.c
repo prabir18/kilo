@@ -5,9 +5,14 @@
 #include <ctype.h>
 #include <errno.h>
 
+#define CTRL_KEY(c) ((c) & 0x1f)
+
 struct termios original_termios;
 
 void die (const char *s) {
+  write(STDOUT_FILENO, "\x1b[2J", 4);
+  write(STDOUT_FILENO, "\x1b[H", 3);
+
   perror(s);
   exit(1);
 }
@@ -40,24 +45,55 @@ void enterRawMode() {
   }
 }
 
+char readKey() {
+  int nread;
+  char c;
+
+  while ((nread = read(STDIN_FILENO, &c, 1)) != 1) {
+    if (nread == -1) {
+      die("read");
+    }
+  }
+  return c;
+}
+
+
+void processKeypress() {
+  char c = readKey();
+
+  switch (c) {
+    case CTRL_KEY('q') :
+      write(STDOUT_FILENO, "\x1b[2J", 4);
+      write(STDOUT_FILENO, "\x1b[H", 3);
+
+      exit(0);
+      break;
+  }
+}
+
+
+void drawRows() {
+  for (int y = 0; y < 24; y++) {
+    write(STDOUT_FILENO, "~\r\n", 3);
+  }
+}
+
+void refreshScreen() {
+  write(STDOUT_FILENO, "\x1b[2J", 4);
+  write(STDOUT_FILENO, "\x1b[H", 3);
+
+  drawRows();
+
+  write(STDOUT_FILENO, "\x1b[H", 3);
+}
+
 int main() {
   enterRawMode();
 
   while (1) {
-    char c ='\0';
-    if (read(STDIN_FILENO, &c, 1) == -1) {
-      die("read");
+      refreshScreen();
+      processKeypress();
     }
-
-    if (iscntrl(c)) {
-      printf("%d\r\n",c);
-    } else {
-      printf("%d ('%c')\r\n",c,c);
-    }
-
-    if (c == 'q') {
-      break;
-    }
-  }
   return 0;
 }
+
