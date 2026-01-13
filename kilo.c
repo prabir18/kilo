@@ -33,6 +33,8 @@ typedef struct erow {
 
 struct config {
   int cx, cy;
+  int rowoff;
+  int coloff;
   int screenrows;
   int screencols;
   struct termios original_termios;
@@ -278,15 +280,13 @@ void moveCursor(int key) {
       break;
 
     case ARROW_DOWN:
-      if (E.cy != E.screenrows - 1) {
+      if (E.cy < E.numrows) {
         E.cy++;
       }
       break;
 
     case ARROW_RIGHT:
-      if (E.cx != E.screencols - 1) {
-        E.cx++;
-      }
+      E.cx++;
       break;
   }
 }
@@ -331,9 +331,25 @@ void processKeypress() {
 }
 
 
+void editorScroll() {
+  if (E.cy < E.rowoff) {
+    E.rowoff = E.cy;
+  }
+  if (E.cy >= E.rowoff + E.screenrows) {
+    E.rowoff = E.cy - E.screenrows + 1;
+  }
+  if (E.cx < E.coloff) {
+    E.coloff = E.cx;
+  }
+  if (E.cx >= E.coloff +E.screencols) {
+    E.coloff = E.cx - E.screencols + 1;
+  }
+}
+
 void drawRows(struct abuf *ab) {
   for (int y = 0; y < E.screenrows; y++) {
-    if (y >= E.numrows) {
+    int filerow = y + E.rowoff;
+    if (filerow >= E.numrows) {
       if (E.numrows == 0 && y == E.screenrows/4) {
         char welcome[80];
 
@@ -355,10 +371,10 @@ void drawRows(struct abuf *ab) {
         abAppend(ab, "~", 1);
       }
     } else {
-      int len = E.row[y].size;
-
-      if (len > E.screencols) len = E.screencols;
-      abAppend(ab, E.row[y].chars, len);
+      int len = E.row[filerow].size - E.coloff;
+      if (len < 0) {len = 0;}
+      if (len > E.screencols) {len = E.screencols;}
+      abAppend(ab, &E.row[filerow].chars[E.coloff], len);
     }
       
     abAppend(ab, "\x1b[K", 3);
@@ -369,6 +385,8 @@ void drawRows(struct abuf *ab) {
 }
 
 void refreshScreen() {
+  editorScroll();
+
   struct abuf ab = ABUF_INIT;
 
   abAppend(&ab, "\x1b[?25l", 6); // hide cursor
@@ -377,7 +395,7 @@ void refreshScreen() {
   drawRows(&ab);
 
   char buf[32];
-  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1, (E.cx - E.coloff) + 1);
   abAppend(&ab, buf, strlen(buf));
 
   abAppend(&ab, "\x1b[?25h", 6); // unhide cursor
@@ -390,6 +408,8 @@ void refreshScreen() {
 void initEditor() {
   E.cx = 0;
   E.cy = 0;
+  E.rowoff = 0;
+  E.coloff = 0;
   E.numrows = 0;
   E.row = NULL;
 
