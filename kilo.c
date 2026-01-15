@@ -13,6 +13,7 @@
 #include <sys/types.h>
 
 #define CTRL_KEY(c) ((c) & 0x1f)
+#define TAB_STOP 8 // configure tab spacing here
 
 enum editorKey {
   ARROW_LEFT = 1000,
@@ -28,11 +29,14 @@ enum editorKey {
 
 typedef struct erow {
   char *chars;
+  int rsize;
   int size;
+  char *render;
 } erow;
 
 struct config {
   int cx, cy;
+  int rx;
   int rowoff;
   int coloff;
   int screenrows;
@@ -212,6 +216,45 @@ int getWindowSize(int *rows, int *cols) {
   }
 }
 
+int rowCxToRx (erow *row, int cx) {
+  int rx = 0;
+  int j;
+
+  for (j = 0; j < cx; j++) {
+    if (row->chars[j] == '\t') {
+      rx += TAB_STOP - 1 + rx%7;
+    }
+    rx++;
+  }
+
+  return rx;
+}
+
+void updateRow (erow *row) {
+  int tabs = 0;
+  int j;
+  for (j = 0; j < row->size; j++) {
+    if (row->chars[j] == '\t') tabs++;
+  }
+
+  free(row->render);
+  row->render = malloc(row->size + TAB_STOP*tabs + 1);
+
+  int index = 0;
+  for (j = 0; j < row->size; j++) {
+    if (row->chars[j] == '\t') {
+      row->render[index++] = ' ';
+      
+      while (index%TAB_STOP != 0) {
+        row->render[index++] = ' ';
+      }
+    } else {
+      row->render[index++] = row->chars[j];
+    }
+  }
+  row->render[index] = '\0';
+  row->rsize = index;
+}
 
 void appendRow(char *s, size_t len) {
   E.row = realloc(E.row, sizeof(erow) * (E.numrows + 1));
@@ -221,8 +264,13 @@ void appendRow(char *s, size_t len) {
   E.row[at].chars = malloc(len + 1);
   memcpy(E.row[at].chars, s, len);
   E.row[at].chars[len] = '\0';
+
+  E.row[at].rsize = 0;
+  E.row[at].render = NULL;
+  updateRow(&E.row[at]);
+
   E.numrows++;
-}
+} 
 
 
 void editorOpen(char *filename) {
@@ -278,6 +326,9 @@ void moveCursor(int key) {
     case ARROW_LEFT:
       if (E.cx != 0) {
         E.cx--;
+      } else if (E.cy >= 0) { // left at edge of line moves to previous line
+        E.cy--; 
+        E.cx = E.row[E.cy].size;
       }
       break;
 
@@ -290,10 +341,14 @@ void moveCursor(int key) {
     case ARROW_RIGHT:
       if (row && E.cx < row->size) {
         E.cx++;
+      } else if (E.cy < E.numrows - 1) { // right at edge of line moves to next line
+        E.cy++;
+        E.cx = 0;
       }
       break;
   }
 
+  // makes sure cursor points to end of line when moving up or down from a long line
   row = (E.cy >= E.numrows) ? NULL : &E.row[E.cy];
   int rowlen = row ? row->size : 0;
   if (E.cx > rowlen) {
@@ -317,12 +372,22 @@ void processKeypress() {
       break;
 
     case END_KEY:
-      E.cx = E.screencols - 1;
+      if (E.cy < E.numrows) {
+        E.cx = E.row[E.cy].size;
+      }
       break;
     
     case PAGE_UP:
     case PAGE_DOWN:
       {
+        if (c == PAGE_UP) {
+          E.cy = E.rowoff;
+        } else {
+          E.cy = E.rowoff + E.screenrows - 1;
+
+          if (E.cy > E.numrows) E.cy = E.numrows - 1;
+        }
+
         int times = E.screenrows;
 
         while (times--) {
@@ -342,17 +407,24 @@ void processKeypress() {
 
 
 void editorScroll() {
+  E.rx = 0;
+  // make sure on real line
+  if (E.cy < E.numrows) {
+    E.rx = rowCxToRx(&E.row[E.cy], E.cx);
+  }
+  
+
   if (E.cy < E.rowoff) {
     E.rowoff = E.cy;
   }
   if (E.cy >= E.rowoff + E.screenrows) {
     E.rowoff = E.cy - E.screenrows + 1;
   }
-  if (E.cx < E.coloff) {
-    E.coloff = E.cx;
+  if (E.rx < E.coloff) {
+    E.coloff = E.rx;
   }
-  if (E.cx >= E.coloff +E.screencols) {
-    E.coloff = E.cx - E.screencols + 1;
+  if (E.rx >= E.coloff +E.screencols) {
+    E.coloff = E.rx - E.screencols + 1;
   }
 }
 
@@ -381,10 +453,10 @@ void drawRows(struct abuf *ab) {
         abAppend(ab, "~", 1);
       }
     } else {
-      int len = E.row[filerow].size - E.coloff;
+      int len = E.row[filerow].rsize - E.coloff;
       if (len < 0) {len = 0;}
       if (len > E.screencols) {len = E.screencols;}
-      abAppend(ab, &E.row[filerow].chars[E.coloff], len);
+      abAppend(ab, &E.row[filerow].render[E.coloff], len);
     }
       
     abAppend(ab, "\x1b[K", 3);
@@ -405,7 +477,7 @@ void refreshScreen() {
   drawRows(&ab);
 
   char buf[32];
-  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1, (E.cx - E.coloff) + 1);
+  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1, (E.rx - E.coloff) + 1);
   abAppend(&ab, buf, strlen(buf));
 
   abAppend(&ab, "\x1b[?25h", 6); // unhide cursor
@@ -418,6 +490,7 @@ void refreshScreen() {
 void initEditor() {
   E.cx = 0;
   E.cy = 0;
+  E.rx = 0;
   E.rowoff = 0;
   E.coloff = 0;
   E.numrows = 0;
