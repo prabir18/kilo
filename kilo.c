@@ -267,10 +267,11 @@ void updateRow (erow *row) {
   row->rsize = index;
 }
 
-void appendRow(char *s, size_t len) {
+void insertRow(int at, char *s, size_t len) {
+  if (at < 0 || at > E.numrows) return;
   E.row = realloc(E.row, sizeof(erow) * (E.numrows + 1));
+  memmove(&E.row[at + 1], &E.row[at], sizeof(erow) * (E.numrows - at));
 
-  int at = E.numrows;
   E.row[at].size = len;
   E.row[at].chars = malloc(len + 1);
   memcpy(E.row[at].chars, s, len);
@@ -313,13 +314,13 @@ void rowAppendString(erow *row, char *s, size_t len) {
   row->chars = realloc(row->chars, row->size + len + 1);
   memcpy(&row->chars[row->size], s, len);
   row->size += len;
-  row->size = '\0';
+  row->chars[row->size] = '\0';
   updateRow(row);
   E.dirty = 1;
 }
 
 void rowDelChar(erow *row, int at) {
-  if (at < 0 || at > E.row->size) return;
+  if (at < 0 || at > row->size) return;
 
   memmove(&row->chars[at], &row->chars[at + 1], row->size - at);
 
@@ -331,10 +332,26 @@ void rowDelChar(erow *row, int at) {
 
 void insertChar(int c) { 
   if (E.cy == E.numrows) {
-    appendRow("", 0);
+    insertRow(E.numrows, "", 0);
   }
   rowInsertChar(&E.row[E.cy], E.cx, c);
   E.cx++;
+}
+
+void insertNewLine() {
+  if (E.cx == 0) {
+    insertRow(E.cy, "", 0);
+  } else {
+    erow *row = &E.row[E.cy];
+    insertRow(E.cy + 1, &row->chars[E.cx], row->size - E.cx);
+
+    row = &E.row[E.cy];
+    row->size = E.cx;
+    row->chars[row->size] = '\0';
+    updateRow(row);
+  }
+  E.cy++;
+  E.cx = 0;
 }
 
 void delChar() {
@@ -342,7 +359,7 @@ void delChar() {
   if (E.cy == 0 && E.cx == 0) return;
 
   if (E.cx > 0) {
-    rowDelChar(&E.row[E.cy], E.cx);
+    rowDelChar(&E.row[E.cy], E.cx - 1);
     E.cx--;
   } else {
     E.cx = E.row[E.cy - 1].size;
@@ -389,7 +406,7 @@ void editorOpen(char *filename) {
     while (linelen > 0 && (line[linelen - 1] == '\n' || line[linelen - 1] == '\r')) {
       linelen--;
     }
-    appendRow(line, linelen);
+    insertRow(E.numrows, line, linelen);
   }
 
   free(line);
@@ -493,7 +510,7 @@ void processKeypress() {
 
   switch (c) {
     case '\r':
-
+      insertNewLine();
       break;
     
     case CTRL_KEY('q') :
@@ -525,7 +542,7 @@ void processKeypress() {
 
     case BACKSPACE:
     case DEL_KEY:
-    case CTRL('h'):
+    case CTRL_KEY('h'):
       if (c == DEL_KEY) moveCursor(ARROW_RIGHT);
       delChar();
       break;
