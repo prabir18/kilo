@@ -17,6 +17,7 @@
 
 #define CTRL_KEY(c) ((c) & 0x1f)
 #define TAB_STOP 8 // configure tab spacing here
+#define QUIT_TIMES 3 // configure how times to press quit with unsaved stuff
 
 enum editorKey {
   BACKSPACE = 127,
@@ -51,6 +52,7 @@ struct config {
   char *filename;
   char statusmsg[80];
   time_t statustime;
+  int dirty;
 };
 struct config E;
 
@@ -279,7 +281,21 @@ void appendRow(char *s, size_t len) {
   updateRow(&E.row[at]);
 
   E.numrows++;
+  E.dirty = 1;
 } 
+
+void freeRow(erow *row) {
+  free(row->render);
+  free(row->chars);
+}
+
+void delRow(int at) {
+  if (at < 0 || at >= E.numrows) return;
+  freeRow(&E.row[at]);
+  memmove(&E.row[at], &E.row[at + 1], sizeof(erow) * (E.numrows - at - 1));
+  E.numrows--;
+  E.dirty--;
+}
 
 void rowInsertChar(erow *row, int at, int c) {
   if (at < 0 || at > row->size) at = row->size;
@@ -290,6 +306,26 @@ void rowInsertChar(erow *row, int at, int c) {
   row->size++;
   row->chars[at] = c;
   updateRow(row);
+  E.dirty = 1;
+}
+
+void rowAppendString(erow *row, char *s, size_t len) {
+  row->chars = realloc(row->chars, row->size + len + 1);
+  memcpy(&row->chars[row->size], s, len);
+  row->size += len;
+  row->size = '\0';
+  updateRow(row);
+  E.dirty = 1;
+}
+
+void rowDelChar(erow *row, int at) {
+  if (at < 0 || at > E.row->size) return;
+
+  memmove(&row->chars[at], &row->chars[at + 1], row->size - at);
+
+  row->size--;
+  updateRow(row);
+  E.dirty = 1;
 }
 
 
@@ -299,6 +335,21 @@ void insertChar(int c) {
   }
   rowInsertChar(&E.row[E.cy], E.cx, c);
   E.cx++;
+}
+
+void delChar() {
+  if (E.cy == E.numrows) return;
+  if (E.cy == 0 && E.cx == 0) return;
+
+  if (E.cx > 0) {
+    rowDelChar(&E.row[E.cy], E.cx);
+    E.cx--;
+  } else {
+    E.cx = E.row[E.cy - 1].size;
+    rowAppendString(&E.row[E.cy - 1], E.row[E.cy].chars, E.row[E.cy].size);
+    delRow(E.cy);
+    E.cy--;
+  }
 }
 
 
@@ -343,6 +394,7 @@ void editorOpen(char *filename) {
 
   free(line);
   fclose(fp);
+  E.dirty = 0;
 }
 
 void editorSave() {
@@ -358,6 +410,7 @@ void editorSave() {
         close(fd);
         free(buf);
         setStatusMessage("%d bytes written to disk!", len);
+        E.dirty = 0;
 
         return;
       }
@@ -434,6 +487,8 @@ void moveCursor(int key) {
 }
 
 void processKeypress() {
+  static int quit_times = QUIT_TIMES;
+
   int c = readKey();
 
   switch (c) {
@@ -442,6 +497,12 @@ void processKeypress() {
       break;
     
     case CTRL_KEY('q') :
+      if (E.dirty && quit_times > 0) {
+        setStatusMessage("Warning file has unsaved changes! Press Ctrl-q %d more times to quit", quit_times);
+        quit_times--;
+        return;
+      }
+
       write(STDOUT_FILENO, "\x1b[2J", 4);
       write(STDOUT_FILENO, "\x1b[H", 3);
 
@@ -465,7 +526,8 @@ void processKeypress() {
     case BACKSPACE:
     case DEL_KEY:
     case CTRL('h'):
-
+      if (c == DEL_KEY) moveCursor(ARROW_RIGHT);
+      delChar();
       break;
     
     case PAGE_UP:
@@ -502,6 +564,8 @@ void processKeypress() {
       insertChar(c);
       break;
   }
+
+  quit_times = QUIT_TIMES;
 }
 
 
@@ -567,7 +631,7 @@ void drawStatusBar(struct abuf *ab) {
   abAppend(ab, "\x1b[7m", 4); // inverts colour
   char status[80], rstatus[80];
 
-  int len = snprintf(status, sizeof(status), "%.20s - %d lines", E.filename ? E.filename : "No Name", E.numrows);
+  int len = snprintf(status, sizeof(status), "%.20s - %d lines %s", E.filename ? E.filename : "No Name", E.numrows, E.dirty ? "(modified)" : "");
   if (len > E.screencols) len = E.screencols;
   abAppend(ab, status, len);
   int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d", E.cy + 1, E.numrows);
@@ -637,6 +701,7 @@ void initEditor() {
   E.filename = NULL;
   E.statusmsg[0] = '\0';
   E.statustime = 0;
+  E.dirty = 0;
 
   if (getWindowSize(&E.screenrows, &E.screencols) == -1) {
     die("getWindowSize");
