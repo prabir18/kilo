@@ -13,11 +13,13 @@
 #include <sys/types.h>
 #include <time.h>
 #include <stdarg.h>
+#include <fcntl.h>
 
 #define CTRL_KEY(c) ((c) & 0x1f)
 #define TAB_STOP 8 // configure tab spacing here
 
 enum editorKey {
+  BACKSPACE = 127,
   ARROW_LEFT = 1000,
   ARROW_RIGHT,
   ARROW_UP,
@@ -51,6 +53,8 @@ struct config {
   time_t statustime;
 };
 struct config E;
+
+void setStatusMessage(const char *fmt, ...);
 
 
 void die (const char *s) {
@@ -277,6 +281,47 @@ void appendRow(char *s, size_t len) {
   E.numrows++;
 } 
 
+void rowInsertChar(erow *row, int at, int c) {
+  if (at < 0 || at > row->size) at = row->size;
+
+  row->chars = realloc(row->chars, row->size + 2);
+  memmove(&row->chars[at + 1], &row->chars[at], row->size - at + 1);
+  
+  row->size++;
+  row->chars[at] = c;
+  updateRow(row);
+}
+
+
+void insertChar(int c) { 
+  if (E.cy == E.numrows) {
+    appendRow("", 0);
+  }
+  rowInsertChar(&E.row[E.cy], E.cx, c);
+  E.cx++;
+}
+
+
+char *rowsToString(int *buflen) {
+  int totlen = 0;
+  int j;
+  for (j = 0; j < E.numrows; j++) {
+    totlen += E.row[j].size;
+  }
+  *buflen = totlen;
+
+  char *buf = malloc(totlen);
+  char *p = buf;
+
+  for (j = 0; j < E.numrows; j++) {
+    memcpy(p, E.row[j].chars, E.row[j].size);
+    p += E.row[j].size;
+    *p = '\n';
+    p++;
+  }
+
+  return buf;
+}
 
 void editorOpen(char *filename) {
   free(E.filename);
@@ -298,6 +343,30 @@ void editorOpen(char *filename) {
 
   free(line);
   fclose(fp);
+}
+
+void editorSave() {
+  if (E.filename == NULL) return;
+
+  int len;
+  char *buf = rowsToString(&len);
+
+  int fd = open(E.filename, O_CREAT | O_RDWR, 0644);
+  if (fd != -1) {
+    if (ftruncate(fd, len) != -1) {
+      if (write(fd, buf, len) == len) {
+        close(fd);
+        free(buf);
+        setStatusMessage("%d bytes written to disk!", len);
+
+        return;
+      }
+      close(fd);
+    }
+  }
+
+  free(buf);
+  setStatusMessage("Could not save. I/O error: %s", strerror(errno));
 }
 
 
@@ -341,7 +410,7 @@ void moveCursor(int key) {
       break;
 
     case ARROW_DOWN:
-      if (E.cy < E.numrows) {
+      if (E.cy < E.numrows - 1) {
         E.cy++;
       }
       break;
@@ -368,11 +437,19 @@ void processKeypress() {
   int c = readKey();
 
   switch (c) {
+    case '\r':
+
+      break;
+    
     case CTRL_KEY('q') :
       write(STDOUT_FILENO, "\x1b[2J", 4);
       write(STDOUT_FILENO, "\x1b[H", 3);
 
       exit(0);
+      break;
+
+    case CTRL_KEY('s'):
+      editorSave();
       break;
 
     case HOME_KEY:
@@ -383,6 +460,12 @@ void processKeypress() {
       if (E.cy < E.numrows) {
         E.cx = E.row[E.cy].size;
       }
+      break;
+
+    case BACKSPACE:
+    case DEL_KEY:
+    case CTRL('h'):
+
       break;
     
     case PAGE_UP:
@@ -409,6 +492,14 @@ void processKeypress() {
     case ARROW_DOWN:
     case ARROW_RIGHT:
       moveCursor(c);
+      break;
+
+    case CTRL_KEY('l'):
+    case '\x1b':
+      break;
+
+    default:
+      insertChar(c);
       break;
   }
 }
@@ -560,7 +651,7 @@ int main(int argc, char *argv[]) {
     editorOpen(argv[1]);
   }
 
-  setStatusMessage("Ctrl-q = Quit");
+  setStatusMessage("Ctrl-q = Quit  |  Ctrl-s = Save");
 
   while (1) {
       refreshScreen();
